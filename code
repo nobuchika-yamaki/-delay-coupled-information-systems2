@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Delay-Coupled Coordination and Information Balance
+--------------------------------------------------
+Implements the model and analysis described in:
+[Your Paper Title, Year]
+
+Author: [Your Name]
+License: MIT
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import hilbert, butter, filtfilt
+from numpy.linalg import inv
+
+# =====================================================
+# 1. Simulation parameters
+# =====================================================
+dt = 1e-3           # time step [s]
+T_total = 300.0     # total duration [s]
+time = np.arange(0, T_total, dt)
+fs = 1/dt
+
+# model parameters
+alpha = 1.0
+beta = 1.0
+gamma = 0.8
+tau_c = 0.05
+sigma = 0.02  # noise intensity
+
+# parameter ranges
+tau_vals = np.arange(0, 0.2, 0.01)
+f1_vals = np.arange(8, 14, 1)
+f2_vals = np.arange(8, 14, 1)
+
+# =====================================================
+# 2. Generate common input u(t)
+# =====================================================
+def bandpass_filter(data, low, high, fs):
+    b, a = butter(4, [low/(fs/2), high/(fs/2)], btype='band')
+    return filtfilt(b, a, data)
+
+np.random.seed(0)
+u = np.random.randn(len(time))
+u = bandpass_filter(u, 1, 20, fs)
+
+# =====================================================
+# 3. Core dynamics
+# =====================================================
+def simulate_pair(tau1, tau2, f1, f2, sigma):
+    N = len(time)
+    x1 = np.zeros(N)
+    x2 = np.zeros(N)
+    delay_steps1 = int(tau1/dt)
+    delay_steps2 = int(tau2/dt)
+    delay_c = int(tau_c/dt)
+
+    # noise
+    n1 = np.random.normal(0, sigma, N)
+    n2 = np.random.normal(0, sigma, N)
+
+    for i in range(max(delay_steps1, delay_steps2, delay_c), N):
+        u1 = u[i - delay_steps1]
+        u2 = u[i - delay_steps2]
+        xc1 = x2[i - delay_c]
+        xc2 = x1[i - delay_c]
+        x1[i] = x1[i-1] + dt * (-alpha*x1[i-1] + beta*u1 + gamma*xc1 + n1[i])
+        x2[i] = x2[i-1] + dt * (-alpha*x2[i-1] + beta*u2 + gamma*xc2 + n2[i])
+    return x1, x2
+
+# =====================================================
+# 4. Metrics: Integration (I_int), Differentiation (Q)
+# =====================================================
+def mutual_information(x, y, bins=50):
+    """Approximate mutual information via histogram method"""
+    joint_hist, _, _ = np.histogram2d(x, y, bins=bins)
+    joint_prob = joint_hist / np.sum(joint_hist)
+    px = np.sum(joint_prob, axis=1)
+    py = np.sum(joint_prob, axis=0)
+    Hx = -np.nansum(px * np.log(px + 1e-12))
+    Hy = -np.nansum(py * np.log(py + 1e-12))
+    Hxy = -np.nansum(joint_prob * np.log(joint_prob + 1e-12))
+    return (Hx + Hy - Hxy) / (Hxy + 1e-12)
+
+def compute_metrics(x1, x2, u):
+    # Integration (I_int)
+    I_int = mutual_information(x1, x2)
+
+    # Differentiation (Q)
+    analytic1 = hilbert(x1)
+    analytic2 = hilbert(x2)
+    phase_diff = np.angle(analytic1) - np.angle(analytic2)
+    Q = np.var(phase_diff) / (np.var(phase_diff) + 1)
+
+    # Composite coordination index
+    C = I_int * Q
+
+    # Fisher Information (input–output sensitivity)
+    mu = np.vstack([x1, x2]).mean(axis=1)
+    cov = np.cov(np.vstack([x1, x2]))
+    du = np.gradient(u)
+    F = np.dot(du, np.dot(inv(cov + np.eye(2)*1e-6), du)) / len(u)
+
+    return I_int, Q, C, F
+
+# =====================================================
+# 5. Parameter exploration
+# =====================================================
+results = []
+for d_tau in tau_vals:
+    tau1, tau2 = 0.1, 0.1 + d_tau
+    for f1 in f1_vals:
+        for f2 in f2_vals:
+            x1, x2 = simulate_pair(tau1, tau2, f1, f2, sigma)
+            I_int, Q, C, F = compute_metrics(x1, x2, u)
+            results.append([d_tau, abs(f1-f2), I_int, Q, C, F])
+results = np.array(results)
+
+# =====================================================
+# 6. Plot coordination surfaces
+# =====================================================
+Δτ = results[:,0]
+ΔF = results[:,1]
+C = results[:,4]
+F = results[:,5]
+
+plt.figure(figsize=(8,6))
+plt.tricontourf(Δτ, ΔF, C, levels=30, cmap='gray')
+plt.xlabel("Δτ (s)")
+plt.ylabel("ΔF (Hz)")
+plt.title("Coordination surface C = I_int × Q")
+plt.colorbar(label="C value")
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(8,6))
+plt.tricontourf(Δτ, ΔF, F, levels=30, cmap='gray')
+plt.xlabel("Δτ (s)")
+plt.ylabel("ΔF (Hz)")
+plt.title("Fisher information surface F(Δτ, ΔF)")
+plt.colorbar(label="F value")
+plt.tight_layout()
+plt.show()
